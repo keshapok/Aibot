@@ -24,6 +24,25 @@ HF_API_KEY = os.getenv("HF_API_KEY")
 API_URL = "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.3 "
 headers = {"Authorization": f"Bearer {HF_API_KEY}"}
 
+# === Контекст диалога ===
+MAX_HISTORY_LENGTH = 10  # Максимум записей в истории
+
+# === Хранилище для истории ===
+user_histories = {}  # {chat_id: ["User: Привет", "Bot: Здравствуйте"]}
+
+# === Формирование промта с историей ===
+def build_prompt(chat_id, new_message):
+    history = user_histories.get(chat_id, [])
+    history.append(f"User: {new_message}")
+    prompt = "\n".join(history[-MAX_HISTORY_LENGTH:])  # Оставляем последние N сообщений
+    return prompt
+
+# === Обновление истории ===
+def update_history(chat_id, bot_response):
+    history = user_histories.get(chat_id, [])
+    history.append(f"Bot: {bot_response}")
+    user_histories[chat_id] = history[-MAX_HISTORY_LENGTH:]
+
 # === Вызов модели ===
 def query(prompt: str):
     try:
@@ -45,13 +64,13 @@ def query(prompt: str):
         else:
             logger.error(f"Ошибка: Получен не JSON. Ответ сервера: '{response.text[:500]}'")
             return {"error": "Неожиданный формат ответа от сервера"}
-
+            
     except Exception as e:
         logger.error(f"Ошибка при обращении к модели: {e}")
         return {"error": str(e)}
 
 # === Обработка ответа ===
-async def get_ai_response(prompt: str) -> str:
+async def get_ai_response(chat_id, prompt: str) -> str:
     output = query(prompt)
 
     if "error" in output:
@@ -66,22 +85,25 @@ async def get_ai_response(prompt: str) -> str:
         return "Не могу ответить."
 
     logger.info(f"Ответ от модели: {text}")
+    update_history(chat_id, text.strip())
     return text.strip()
 
 # === Команда /start ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.message.from_user
-    logger.info(f"Пользователь {user.id} ({user.username}) вызвал /start")
-    await update.message.reply_text("Привет! Я ИИ-бот на базе Mistral-7B-Instruct. Задавайте вопросы на русском.")
+    chat_id = update.message.chat_id
+    user_histories[chat_id] = []  # Начинаем новую историю
+    logger.info(f"Пользователь {chat_id} начал новый диалог")
+    await update.message.reply_text("Привет! Я помню предыдущие сообщения. Спрашивайте на русском.")
 
 # === Обработка сообщений ===
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.message.from_user
+    chat_id = update.message.chat_id
     user_text = update.message.text
-    logger.info(f"Сообщение от {user.id} ({user.username}): {user_text}")
+    logger.info(f"Сообщение от {chat_id}: {user_text}")
 
     await update.message.reply_text("Подождите, я думаю...")
-    answer = await get_ai_response(user_text)
+    prompt = build_prompt(chat_id, user_text)
+    answer = await get_ai_response(chat_id, prompt)
     await update.message.reply_text(answer)
 
 # === Точка входа ===
